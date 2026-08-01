@@ -7,8 +7,9 @@ import os
 # 1. Credentials
 MEXC_API_KEY = 'mx0vglAfCE8tKXscOi'
 MEXC_SECRET_KEY = '5591ea266c5141bcbfe5f37782c84ac2'
-TELEGRAM_BOT_TOKEN = '‎8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
+TELEGRAM_BOT_TOKEN = '8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
 TELEGRAM_CHAT_ID = '8013586305'
+
 
 def send_telegram_alert(message):
     try:
