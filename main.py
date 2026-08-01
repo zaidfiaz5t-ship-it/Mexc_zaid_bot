@@ -1,100 +1,155 @@
-import ccxt.async_support as ccxt_async
+import os
 import asyncio
+import json
+import time
 import requests
+import pandas as pd
+import numpy as np
 
-# ==========================================
-# 1. TELEGRAM CREDENTIALS
-# ==========================================
-TELEGRAM_BOT_TOKEN = '8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
-TELEGRAM_CHAT_ID = '8013586305'
+# Railway Environment Variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8013586305")
+MEXC_API_KEY = os.getenv("MEXC_API_KEY", "mx0vglAfCE8tKXscOi")
+MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "5591ea266c5141bcbfe5f37782c84ac2")
 
-# ==========================================
-# 2. TARGET MEXC PAIRS (Top Volatile / High Spread)
-# ==========================================
-TARGET_PAIRS = [
-    'KAS/USDT',
-    'JASMY/USDT',
-    'PEPE/USDT',
-    'FLOKI/USDT',
-    'BONK/USDT',
-    'MEW/USDT',
-    'NOT/USDT',
-    'TURBO/USDT',
-    'SHIB/USDT',
-    'WIF/USDT'
-]
+SYMBOL = "BTCUSDT"
+TIMEFRAME = "15m"
 
-# MEXC Standard Spot Fee (0.1% = 0.001)
-MEXC_SPOT_FEE = 0.001  
-START_CAPITAL = 100.0  # Baseline $100 calculation
-
-def send_telegram_alert(message):
+def send_telegram_msg(message):
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("Telegram Token Missing!")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        requests.post(url, data=payload, timeout=5)
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print("Telegram Alert Error:", e)
+        print(f"Telegram Alert Error: {e}")
 
-async def main():
-    # Only MEXC Exchange connection
-    mexc = ccxt_async.mexc({
-        'enableRateLimit': True, 
-        'timeout': 15000
-    })
-
-    send_telegram_alert("🚀 <b>MEXC Internal Spread Engine Online!</b>\nScanning Orderbook gaps for target pairs with exact fee deduction...")
+def fetch_mexc_klines(limit=100):
+    """MEXC API se BTC/USDT 15m K-line data fetch karta hai"""
+    url = f"https://api.mexc.com/api/v3/klines?symbol={SYMBOL}&interval={TIMEFRAME}&limit={limit}"
+    
+    headers = {}
+    if MEXC_API_KEY:
+        headers["X-MEXC-APIKEY"] = MEXC_API_KEY
 
     try:
-        while True:
-            try:
-                # Fetch MEXC tickers
-                mexc_tickers = await mexc.fetch_tickers(TARGET_PAIRS)
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        df = pd.DataFrame(data, columns=[
+            'open_time', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume'
+        ])
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
+        return df
+    except Exception as e:
+        print(f"Error fetching MEXC data: {e}")
+        return None
 
-                for symbol in TARGET_PAIRS:
-                    t_mexc = mexc_tickers.get(symbol)
+def analyze_candle(df):
+    pivots = 10
+    recent_df = df.iloc[-pivots*2:-1]
+    resistance = recent_df['high'].max()
+    support = recent_df['low'].min()
 
-                    if not (t_mexc and t_mexc.get('ask') and t_mexc.get('bid')):
-                        continue
+    next_resistance = resistance + (resistance - support)
+    next_support = support - (resistance - support)
 
-                    mexc_ask = float(t_mexc['ask'])  # Lowest price to BUY
-                    mexc_bid = float(t_mexc['bid'])  # Highest price to SELL
+    last_candle = df.iloc[-2] # Recently closed candle
+    prev_candles = df.iloc[:-1]
 
-                    if mexc_ask > 0 and mexc_bid > 0:
-                        # 1. Buy coins at Best Ask Price (Deduct 0.1% Fee)
-                        coins_bought = (START_CAPITAL / mexc_ask) * (1 - MEXC_SPOT_FEE)
-                        
-                        # 2. Sell coins at Best Bid Price (Deduct 0.1% Fee)
-                        final_usdt = (coins_bought * mexc_bid) * (1 - MEXC_SPOT_FEE)
-                        
-                        # Calculations
-                        gross_gap_pct = ((mexc_bid - mexc_ask) / mexc_ask) * 100
-                        net_profit = final_usdt - START_CAPITAL
-                        net_profit_pct = (net_profit / START_CAPITAL) * 100
+    close_price = last_candle['close']
+    vol = last_candle['volume']
 
-                        msg = (
-                            f"📊 <b>MEXC INTERNAL ORDERBOOK SCAN</b>\n"
-                            f"📌 <b>Pair:</b> {symbol}\n\n"
-                            f"🟢 <b>Best Ask (Buy Price):</b> ${mexc_ask:.6f}\n"
-                            f"🔴 <b>Best Bid (Sell Price):</b> ${mexc_bid:.6f}\n"
-                            f"📈 <b>Gross Book Spread:</b> {gross_gap_pct:+.3f}%\n\n"
-                            f"💵 <b>Initial Capital:</b> ${START_CAPITAL:.2f}\n"
-                            f"📉 <b>MEXC Buy Fee (0.1%):</b> Deducted\n"
-                            f"📉 <b>MEXC Sell Fee (0.1%):</b> Deducted\n"
-                            f"🏁 <b>Final Capital:</b> ${final_usdt:.3f}\n"
-                            f"💰 <b>Net P/L:</b> <b>{net_profit:+.3f} USDT ({net_profit_pct:+.3f}%)</b>"
-                        )
-                        send_telegram_alert(msg)
+    is_breakout_up = close_price > resistance
+    is_breakout_down = close_price < support
 
-                await asyncio.sleep(4)  # 4-second scan loop
+    if not is_breakout_up and not is_breakout_down:
+        return
 
-            except Exception as loop_e:
-                await asyncio.sleep(2)
+    # 1. Analyzing Alert
+    send_telegram_msg("🔍 *[MEXC Scanning]* Breakout Detected on BTC/USDT 15m.\nChecking SMC Filters...")
 
-    except Exception as fatal_e:
-        send_telegram_alert(f"⚠️ <b>Engine Alert:</b> {fatal_e}")
-    finally:
-        await mexc.close()
+    reasons = []
+
+    # Filter 1: Volume Spike Check
+    avg_vol = prev_candles['volume'].tail(20).mean()
+    if vol <= avg_vol * 1.2:
+        reasons.append(f"Low Volume Spike (Vol: {vol:.1f} vs Avg: {avg_vol:.1f})")
+
+    # Filter 2: FVG Gap Check
+    if is_breakout_up:
+        c1_high = prev_candles.iloc[-3]['high']
+        c3_low = last_candle['low']
+        if c3_low > c1_high:
+            fvg_gap = (c3_low - c1_high) / close_price
+            if fvg_gap > 0.003: # 0.3% Threshold
+                reasons.append("Unfilled FVG Gap Below Entry")
+    elif is_breakout_down:
+        c1_low = prev_candles.iloc[-3]['low']
+        c3_high = last_candle['high']
+        if c3_high < c1_low:
+            fvg_gap = (c1_low - c3_high) / close_price
+            if fvg_gap > 0.003:
+                reasons.append("Unfilled FVG Gap Above Entry")
+
+    # Send Notification Results
+    if is_breakout_up:
+        send_telegram_msg(f"⚡ *MEXC Breakout:* Resistance Broken @ `{resistance:.2f}`")
+        if not reasons:
+            send_telegram_msg(
+                f"✅ *Verification Passed! All SMC Filters Clear.*\n\n"
+                f"📈 *Signal: BUY / LONG*\n"
+                f"📍 *Entry:* `{close_price:.2f}`\n"
+                f"🛑 *SL:* `{support:.2f}`\n"
+                f"🎯 *TP:* `{next_resistance:.2f}`"
+            )
+        else:
+            send_telegram_msg(f"❌ *Verification Failed! Trade Skipped.*\n*Reason:* {', '.join(reasons)}")
+
+    elif is_breakout_down:
+        send_telegram_msg(f"⚡ *MEXC Breakout:* Support Broken @ `{support:.2f}`")
+        if not reasons:
+            send_telegram_msg(
+                f"✅ *Verification Passed! All SMC Filters Clear.*\n\n"
+                f"📉 *Signal: SELL / SHORT*\n"
+                f"📍 *Entry:* `{close_price:.2f}`\n"
+                f"🛑 *SL:* `{resistance:.2f}`\n"
+                f"🎯 *TP:* `{next_support:.2f}`"
+            )
+        else:
+            send_telegram_msg(f"❌ *Verification Failed! Trade Skipped.*\n*Reason:* {', '.join(reasons)}")
+
+async def main_loop():
+    send_telegram_msg("🤖 *BTC/USDT MEXC SMC Breakout Scanner Started on Railway!*")
+    last_processed_time = None
+
+    while True:
+        try:
+            df = fetch_mexc_klines(limit=50)
+            if df is not None and not df.empty:
+                current_candle_time = df.iloc[-1]['open_time']
+                
+                # Check if a new 15m candle has closed
+                if last_processed_time != current_candle_time:
+                    last_processed_time = current_candle_time
+                    analyze_candle(df)
+
+            # Polling every 15 seconds
+            await asyncio.sleep(15)
+
+        except Exception as e:
+            print(f"Loop Error: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main_loop())
