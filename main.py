@@ -3,27 +3,30 @@ import asyncio
 import requests
 
 # ==========================================
-# 1. API KEYS & CREDENTIALS
+# 1. TELEGRAM CREDENTIALS
 # ==========================================
-# Insert your NEW Read-Only Keys here
-# Replace this line in main():
-binance = ccxt_async.binance({
-    'enableRateLimit': True,
-    'timeout': 15000
-})
-
-
-MEXC_API_KEY = 'mx0vglAfCE8tKXscOi'
-MEXC_SECRET_KEY = '5591ea266c5141bcbfe5f37782c84ac2'
-
 TELEGRAM_BOT_TOKEN = '8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
 TELEGRAM_CHAT_ID = '8013586305'
 
 # ==========================================
-# 2. CONFIGURATION PARAMETERS
+# 2. TARGET MEXC PAIRS (Top Volatile / High Spread)
 # ==========================================
-MIN_NET_PROFIT_PCT = 0.05  # Minimum profit percentage after fees
-DEFAULT_FEE = 0.001        # 0.1% Standard Spot Fee
+TARGET_PAIRS = [
+    'KAS/USDT',
+    'JASMY/USDT',
+    'PEPE/USDT',
+    'FLOKI/USDT',
+    'BONK/USDT',
+    'MEW/USDT',
+    'NOT/USDT',
+    'TURBO/USDT',
+    'SHIB/USDT',
+    'WIF/USDT'
+]
+
+# MEXC Standard Spot Fee (0.1% = 0.001)
+MEXC_SPOT_FEE = 0.001  
+START_CAPITAL = 100.0  # Baseline $100 calculation
 
 def send_telegram_alert(message):
     try:
@@ -33,108 +36,57 @@ def send_telegram_alert(message):
     except Exception as e:
         print("Telegram Alert Error:", e)
 
-# ==========================================
-# 3. BULK CROSS-EXCHANGE SCANNER ENGINE
-# ==========================================
 async def main():
-    binance = ccxt_async.binance({
-        'apiKey': BINANCE_API_KEY,
-        'secret': BINANCE_SECRET_KEY,
-        'enableRateLimit': True,
-        'timeout': 15000
-    })
-    
+    # Only MEXC Exchange connection
     mexc = ccxt_async.mexc({
-        'apiKey': MEXC_API_KEY,
-        'secret': MEXC_SECRET_KEY,
-        'enableRateLimit': True,
+        'enableRateLimit': True, 
         'timeout': 15000
     })
 
-    send_telegram_alert("🚀 <b>Authenticated Cross-Scanner Active!</b>\nConnected to Binance & MEXC via API Keys.")
+    send_telegram_alert("🚀 <b>MEXC Internal Spread Engine Online!</b>\nScanning Orderbook gaps for target pairs with exact fee deduction...")
 
     try:
-        binance_markets, mexc_markets = await asyncio.gather(
-            binance.load_markets(),
-            mexc.load_markets()
-        )
-
-        binance_symbols = {s for s in binance_markets if s.endswith('/USDT') and binance_markets[s].get('spot')}
-        mexc_symbols = {s for s in mexc_markets if s.endswith('/USDT') and mexc_markets[s].get('spot')}
-        
-        common_symbols = list(binance_symbols.intersection(mexc_symbols))
-
-        send_telegram_alert(f"✅ <b>Setup Complete!</b>\nMonitoring <b>{len(common_symbols)} Common Spot Pairs</b> between Binance & MEXC.")
-        print(f"Loaded {len(common_symbols)} common spot pairs.")
-
-        scan_counter = 0
-
         while True:
-            scan_counter += 1
             try:
-                binance_tickers, mexc_tickers = await asyncio.gather(
-                    binance.fetch_tickers(common_symbols),
-                    mexc.fetch_tickers(common_symbols),
-                    return_exceptions=True
-                )
+                # Fetch MEXC tickers
+                mexc_tickers = await mexc.fetch_tickers(TARGET_PAIRS)
 
-                if isinstance(binance_tickers, Exception) or isinstance(mexc_tickers, Exception):
-                    await asyncio.sleep(2)
-                    continue
+                for symbol in TARGET_PAIRS:
+                    t_mexc = mexc_tickers.get(symbol)
 
-                for symbol in common_symbols:
-                    t1 = binance_tickers.get(symbol)
-                    t2 = mexc_tickers.get(symbol)
-
-                    if not (t1 and t2 and t1.get('ask') and t1.get('bid') and t2.get('ask') and t2.get('bid')):
+                    if not (t_mexc and t_mexc.get('ask') and t_mexc.get('bid')):
                         continue
 
-                    start_capital = 100.0  # $100 basis
+                    mexc_ask = float(t_mexc['ask'])  # Lowest price to BUY
+                    mexc_bid = float(t_mexc['bid'])  # Highest price to SELL
 
-                    # --- ROUTE A: Buy Binance, Sell MEXC ---
-                    buy_a, sell_a = t1['ask'], t2['bid']
-                    if buy_a > 0:
-                        coins_a = (start_capital / buy_a) * (1 - DEFAULT_FEE)
-                        return_a = (coins_a * sell_a) * (1 - DEFAULT_FEE)
-                        profit_a_pct = ((return_a - start_capital) / start_capital) * 100
+                    if mexc_ask > 0 and mexc_bid > 0:
+                        # 1. Buy coins at Best Ask Price (Deduct 0.1% Fee)
+                        coins_bought = (START_CAPITAL / mexc_ask) * (1 - MEXC_SPOT_FEE)
+                        
+                        # 2. Sell coins at Best Bid Price (Deduct 0.1% Fee)
+                        final_usdt = (coins_bought * mexc_bid) * (1 - MEXC_SPOT_FEE)
+                        
+                        # Calculations
+                        gross_gap_pct = ((mexc_bid - mexc_ask) / mexc_ask) * 100
+                        net_profit = final_usdt - START_CAPITAL
+                        net_profit_pct = (net_profit / START_CAPITAL) * 100
 
-                        if profit_a_pct >= MIN_NET_PROFIT_PCT:
-                            msg = (
-                                f"🚨 <b>BINANCE ➔ MEXC ARBITRAGE!</b>\n\n"
-                                f"📌 <b>Pair:</b> {symbol}\n"
-                                f"🟢 <b>BUY on Binance:</b> ${buy_a:.4f}\n"
-                                f"🔴 <b>SELL on MEXC:</b> ${sell_a:.4f}\n\n"
-                                f"📈 <b>Net Profit:</b> +{profit_a_pct:.3f}%\n"
-                                f"💰 <b>Est. Pure Profit ($100):</b> +${(return_a - start_capital):.3f}\n"
-                                f"💵 <b>Expected Return:</b> ${return_a:.3f}\n\n"
-                                f"⚡ <i>Fees Deducted! Execute manually.</i>"
-                            )
-                            send_telegram_alert(msg)
+                        msg = (
+                            f"📊 <b>MEXC INTERNAL ORDERBOOK SCAN</b>\n"
+                            f"📌 <b>Pair:</b> {symbol}\n\n"
+                            f"🟢 <b>Best Ask (Buy Price):</b> ${mexc_ask:.6f}\n"
+                            f"🔴 <b>Best Bid (Sell Price):</b> ${mexc_bid:.6f}\n"
+                            f"📈 <b>Gross Book Spread:</b> {gross_gap_pct:+.3f}%\n\n"
+                            f"💵 <b>Initial Capital:</b> ${START_CAPITAL:.2f}\n"
+                            f"📉 <b>MEXC Buy Fee (0.1%):</b> Deducted\n"
+                            f"📉 <b>MEXC Sell Fee (0.1%):</b> Deducted\n"
+                            f"🏁 <b>Final Capital:</b> ${final_usdt:.3f}\n"
+                            f"💰 <b>Net P/L:</b> <b>{net_profit:+.3f} USDT ({net_profit_pct:+.3f}%)</b>"
+                        )
+                        send_telegram_alert(msg)
 
-                    # --- ROUTE B: Buy MEXC, Sell Binance ---
-                    buy_b, sell_b = t2['ask'], t1['bid']
-                    if buy_b > 0:
-                        coins_b = (start_capital / buy_b) * (1 - DEFAULT_FEE)
-                        return_b = (coins_b * sell_b) * (1 - DEFAULT_FEE)
-                        profit_b_pct = ((return_b - start_capital) / start_capital) * 100
-
-                        if profit_b_pct >= MIN_NET_PROFIT_PCT:
-                            msg = (
-                                f"🚨 <b>MEXC ➔ BINANCE ARBITRAGE!</b>\n\n"
-                                f"📌 <b>Pair:</b> {symbol}\n"
-                                f"🟢 <b>BUY on MEXC:</b> ${buy_b:.4f}\n"
-                                f"🔴 <b>SELL on Binance:</b> ${sell_b:.4f}\n\n"
-                                f"📈 <b>Net Profit:</b> +{profit_b_pct:.3f}%\n"
-                                f"💰 <b>Est. Pure Profit ($100):</b> +${(return_b - start_capital):.3f}\n"
-                                f"💵 <b>Expected Return:</b> ${return_b:.3f}\n\n"
-                                f"⚡ <i>Fees Deducted! Execute manually.</i>"
-                            )
-                            send_telegram_alert(msg)
-
-                if scan_counter % 20 == 0:
-                    send_telegram_alert(f"📊 <b>System Update:</b> Scanner Active. Total Scans Completed: <b>{scan_counter}</b>")
-
-                await asyncio.sleep(2)
+                await asyncio.sleep(4)  # 4-second scan loop
 
             except Exception as loop_e:
                 await asyncio.sleep(2)
@@ -142,9 +94,7 @@ async def main():
     except Exception as fatal_e:
         send_telegram_alert(f"⚠️ <b>Engine Alert:</b> {fatal_e}")
     finally:
-        await binance.close()
         await mexc.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
