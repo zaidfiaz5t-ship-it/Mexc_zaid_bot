@@ -6,8 +6,12 @@ import requests
 # 1. API KEYS & CREDENTIALS
 # ==========================================
 # Insert your NEW Read-Only Keys here
-BINANCE_API_KEY = '643PUYwJZ94mPdvvbHjnuYKc9xCnG2iQv8lraY9GnvIAuzI7WmoF3DXVeJdibbZ5'
-BINANCE_SECRET_KEY = 'Gnj9QDaBsGLBtUVsVbqY6nrUvRwzvHqOFDEroL9YYUZ5WylGMBycMAKTbxguuS09'
+# Replace this line in main():
+binance = ccxt_async.binance({
+    'enableRateLimit': True,
+    'timeout': 15000
+})
+
 
 MEXC_API_KEY = 'mx0vglAfCE8tKXscOi'
 MEXC_SECRET_KEY = '5591ea266c5141bcbfe5f37782c84ac2'
