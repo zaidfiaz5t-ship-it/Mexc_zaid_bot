@@ -2,14 +2,14 @@ import ccxt.async_support as ccxt_async
 import asyncio
 import time
 import requests
+import os
 
 # 1. Credentials
 MEXC_API_KEY = 'mx0vglAfCE8tKXscOi'
 MEXC_SECRET_KEY = '5591ea266c5141bcbfe5f37782c84ac2'
-TELEGRAM_BOT_TOKEN = '8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
+TELEGRAM_BOT_TOKEN = '‎8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
 TELEGRAM_CHAT_ID = '8013586305'
 
-# Telegram Message Sending Function
 def send_telegram_alert(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -58,9 +58,8 @@ async def main():
     
     MIN_TARGET_MARGIN = 0.05
     
-    # Startup Notification to Telegram
-    send_telegram_alert("🚀 <b>Arbitrage Cloud Bot Started!</b>\nMonitoring MEXC 24/7...")
-    print("Bot started & Telegram confirmation sent!")
+    send_telegram_alert("🚀 <b>Arbitrage Cloud Bot Started on Railway!</b>\nMonitoring MEXC 24/7...")
+    print("Bot started successfully on Railway!")
 
     try:
         while True:
@@ -84,4 +83,6 @@ async def main():
     finally:
         await mexc.close()
 
-await main()
+if __name__ == "__main__":
+    asyncio.run(main())
+    
