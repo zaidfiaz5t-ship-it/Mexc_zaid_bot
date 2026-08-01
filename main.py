@@ -3,12 +3,22 @@ import asyncio
 import requests
 
 # ==========================================
-# 1. CREDENTIALS & CONFIGURATION
+# 1. API KEYS & CREDENTIALS
 # ==========================================
+# Insert your NEW Read-Only Keys here
+BINANCE_API_KEY = '643PUYwJZ94mPdvvbHjnuYKc9xCnG2iQv8lraY9GnvIAuzI7WmoF3DXVeJdibbZ5'
+BINANCE_SECRET_KEY = 'Gnj9QDaBsGLBtUVsVbqY6nrUvRwzvHqOFDEroL9YYUZ5WylGMBycMAKTbxguuS09'
+
+MEXC_API_KEY = 'mx0vglAfCE8tKXscOi'
+MEXC_SECRET_KEY = '5591ea266c5141bcbfe5f37782c84ac2'
+
 TELEGRAM_BOT_TOKEN = '8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs'
 TELEGRAM_CHAT_ID = '8013586305'
 
-MIN_NET_PROFIT_PCT = 0.05  # Minimum profit percentage threshold
+# ==========================================
+# 2. CONFIGURATION PARAMETERS
+# ==========================================
+MIN_NET_PROFIT_PCT = 0.05  # Minimum profit percentage after fees
 DEFAULT_FEE = 0.001        # 0.1% Standard Spot Fee
 
 def send_telegram_alert(message):
@@ -20,115 +30,116 @@ def send_telegram_alert(message):
         print("Telegram Alert Error:", e)
 
 # ==========================================
-# 2. SAFE CROSS-PAIR SCANNER
-# ==========================================
-async def scan_cross_pair(ex1, ex2, symbol, ex1_name, ex2_name):
-    try:
-        # Rate limit safety ke liye continuous fetching with exception handling
-        t1 = await ex1.fetch_ticker(symbol)
-        t2 = await ex2.fetch_ticker(symbol)
-
-        if not (t1 and t2 and t1.get('ask') and t1.get('bid') and t2.get('ask') and t2.get('bid')):
-            return None
-
-        start_capital = 100.0
-
-        # --- ROUTE A: Buy EX1 (MEXC), Sell EX2 (Gate.io) ---
-        buy_a, sell_a = t1['ask'], t2['bid']
-        coins_a = (start_capital / buy_a) * (1 - DEFAULT_FEE)
-        return_a = (coins_a * sell_a) * (1 - DEFAULT_FEE)
-        profit_a_pct = ((return_a - start_capital) / start_capital) * 100
-
-        if profit_a_pct >= MIN_NET_PROFIT_PCT:
-            return {
-                'buy_ex': ex1_name, 'sell_ex': ex2_name,
-                'symbol': symbol, 'buy_price': buy_a, 'sell_price': sell_a,
-                'net_profit_pct': profit_a_pct,
-                'net_profit_usdt': return_a - start_capital,
-                'final_usdt': return_a
-            }
-
-        # --- ROUTE B: Buy EX2 (Gate.io), Sell EX1 (MEXC) ---
-        buy_b, sell_b = t2['ask'], t1['bid']
-        coins_b = (start_capital / buy_b) * (1 - DEFAULT_FEE)
-        return_b = (coins_b * sell_b) * (1 - DEFAULT_FEE)
-        profit_b_pct = ((return_b - start_capital) / start_capital) * 100
-
-        if profit_b_pct >= MIN_NET_PROFIT_PCT:
-            return {
-                'buy_ex': ex2_name, 'sell_ex': ex1_name,
-                'symbol': symbol, 'buy_price': buy_b, 'sell_price': sell_b,
-                'net_profit_pct': profit_b_pct,
-                'net_profit_usdt': return_b - start_capital,
-                'final_usdt': return_b
-            }
-
-    except Exception:
-        # Ignore individual pair errors to keep loop running uninterrupted
-        pass
-    return None
-
-# ==========================================
-# 3. MAIN RUNNER (CRASH PROOF)
+# 3. BULK CROSS-EXCHANGE SCANNER ENGINE
 # ==========================================
 async def main():
-    mexc = ccxt_async.mexc({'enableRateLimit': True, 'timeout': 10000})
-    gate = ccxt_async.gateio({'enableRateLimit': True, 'timeout': 10000})
+    binance = ccxt_async.binance({
+        'apiKey': BINANCE_API_KEY,
+        'secret': BINANCE_SECRET_KEY,
+        'enableRateLimit': True,
+        'timeout': 15000
+    })
+    
+    mexc = ccxt_async.mexc({
+        'apiKey': MEXC_API_KEY,
+        'secret': MEXC_SECRET_KEY,
+        'enableRateLimit': True,
+        'timeout': 15000
+    })
 
-    send_telegram_alert("🚀 <b>Crash-Proof Engine Starting...</b>\nEstablishing secure connections...")
+    send_telegram_alert("🚀 <b>Authenticated Cross-Scanner Active!</b>\nConnected to Binance & MEXC via API Keys.")
 
-    while True:
-        try:
-            # Re-fetch markets in case of reconnection
-            mexc_markets = await mexc.load_markets()
-            gate_markets = await gate.load_markets()
+    try:
+        binance_markets, mexc_markets = await asyncio.gather(
+            binance.load_markets(),
+            mexc.load_markets()
+        )
 
-            mexc_symbols = {s for s in mexc_markets if s.endswith('/USDT') and mexc_markets[s].get('spot')}
-            gate_symbols = {s for s in gate_markets if s.endswith('/USDT') and gate_markets[s].get('spot')}
-            
-            common_symbols = list(mexc_symbols.intersection(gate_symbols))
-            send_telegram_alert(f"✅ <b>Active!</b> Scanning {len(common_symbols)} common spot markets...")
+        binance_symbols = {s for s in binance_markets if s.endswith('/USDT') and binance_markets[s].get('spot')}
+        mexc_symbols = {s for s in mexc_markets if s.endswith('/USDT') and mexc_markets[s].get('spot')}
+        
+        common_symbols = list(binance_symbols.intersection(mexc_symbols))
 
-            scan_counter = 0
-            BATCH_SIZE = 5  # Reduced batch size to prevent IP blocking/Rate limits
+        send_telegram_alert(f"✅ <b>Setup Complete!</b>\nMonitoring <b>{len(common_symbols)} Common Spot Pairs</b> between Binance & MEXC.")
+        print(f"Loaded {len(common_symbols)} common spot pairs.")
 
-            while True:
-                scan_counter += 1
+        scan_counter = 0
 
-                for i in range(0, len(common_symbols), BATCH_SIZE):
-                    batch = common_symbols[i:i + BATCH_SIZE]
-                    tasks = [scan_cross_pair(mexc, gate, sym, "MEXC", "Gate.io") for sym in batch]
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
+        while True:
+            scan_counter += 1
+            try:
+                binance_tickers, mexc_tickers = await asyncio.gather(
+                    binance.fetch_tickers(common_symbols),
+                    mexc.fetch_tickers(common_symbols),
+                    return_exceptions=True
+                )
 
-                    for res in results:
-                        if isinstance(res, dict) and res:
+                if isinstance(binance_tickers, Exception) or isinstance(mexc_tickers, Exception):
+                    await asyncio.sleep(2)
+                    continue
+
+                for symbol in common_symbols:
+                    t1 = binance_tickers.get(symbol)
+                    t2 = mexc_tickers.get(symbol)
+
+                    if not (t1 and t2 and t1.get('ask') and t1.get('bid') and t2.get('ask') and t2.get('bid')):
+                        continue
+
+                    start_capital = 100.0  # $100 basis
+
+                    # --- ROUTE A: Buy Binance, Sell MEXC ---
+                    buy_a, sell_a = t1['ask'], t2['bid']
+                    if buy_a > 0:
+                        coins_a = (start_capital / buy_a) * (1 - DEFAULT_FEE)
+                        return_a = (coins_a * sell_a) * (1 - DEFAULT_FEE)
+                        profit_a_pct = ((return_a - start_capital) / start_capital) * 100
+
+                        if profit_a_pct >= MIN_NET_PROFIT_PCT:
                             msg = (
-                                f"🚨 <b>MEXC vs GATE.IO ARBITRAGE!</b>\n\n"
-                                f"📌 <b>Pair:</b> {res['symbol']}\n"
-                                f"🟢 <b>BUY on {res['buy_ex']}:</b> ${res['buy_price']:.4f}\n"
-                                f"🔴 <b>SELL on {res['sell_ex']}:</b> ${res['sell_price']:.4f}\n\n"
-                                f"📈 <b>Net Profit:</b> +{res['net_profit_pct']:.3f}%\n"
-                                f"💰 <b>Pure Profit ($100):</b> +${res['net_profit_usdt']:.3f}\n"
-                                f"⚡ <i>Fees Deducted!</i>"
+                                f"🚨 <b>BINANCE ➔ MEXC ARBITRAGE!</b>\n\n"
+                                f"📌 <b>Pair:</b> {symbol}\n"
+                                f"🟢 <b>BUY on Binance:</b> ${buy_a:.4f}\n"
+                                f"🔴 <b>SELL on MEXC:</b> ${sell_a:.4f}\n\n"
+                                f"📈 <b>Net Profit:</b> +{profit_a_pct:.3f}%\n"
+                                f"💰 <b>Est. Pure Profit ($100):</b> +${(return_a - start_capital):.3f}\n"
+                                f"💵 <b>Expected Return:</b> ${return_a:.3f}\n\n"
+                                f"⚡ <i>Fees Deducted! Execute manually.</i>"
                             )
                             send_telegram_alert(msg)
 
-                    await asyncio.sleep(0.3)  # Small throttle delay for safety
+                    # --- ROUTE B: Buy MEXC, Sell Binance ---
+                    buy_b, sell_b = t2['ask'], t1['bid']
+                    if buy_b > 0:
+                        coins_b = (start_capital / buy_b) * (1 - DEFAULT_FEE)
+                        return_b = (coins_b * sell_b) * (1 - DEFAULT_FEE)
+                        profit_b_pct = ((return_b - start_capital) / start_capital) * 100
 
-                if scan_counter % 10 == 0:
-                    send_telegram_alert(f"📊 <b>System Update:</b> Active. Total Scanned Cycles: {scan_counter}")
+                        if profit_b_pct >= MIN_NET_PROFIT_PCT:
+                            msg = (
+                                f"🚨 <b>MEXC ➔ BINANCE ARBITRAGE!</b>\n\n"
+                                f"📌 <b>Pair:</b> {symbol}\n"
+                                f"🟢 <b>BUY on MEXC:</b> ${buy_b:.4f}\n"
+                                f"🔴 <b>SELL on Binance:</b> ${sell_b:.4f}\n\n"
+                                f"📈 <b>Net Profit:</b> +{profit_b_pct:.3f}%\n"
+                                f"💰 <b>Est. Pure Profit ($100):</b> +${(return_b - start_capital):.3f}\n"
+                                f"💵 <b>Expected Return:</b> ${return_b:.3f}\n\n"
+                                f"⚡ <i>Fees Deducted! Execute manually.</i>"
+                            )
+                            send_telegram_alert(msg)
 
-        except Exception as main_err:
-            print("Temporary Connection Drop:", main_err)
-            # Send alert only on actual crash event & auto-restart loop
-            send_telegram_alert(f"⚠️ <b>Network Re-connecting:</b> {main_err}")
-            await asyncio.sleep(5)  # Wait 5 sec before reconnecting
-        finally:
-            await mexc.close()
-            await gate.close()
-            # Re-instantiate CCXT objects on restart
-            mexc = ccxt_async.mexc({'enableRateLimit': True, 'timeout': 10000})
-            gate = ccxt_async.gateio({'enableRateLimit': True, 'timeout': 10000})
+                if scan_counter % 20 == 0:
+                    send_telegram_alert(f"📊 <b>System Update:</b> Scanner Active. Total Scans Completed: <b>{scan_counter}</b>")
+
+                await asyncio.sleep(2)
+
+            except Exception as loop_e:
+                await asyncio.sleep(2)
+
+    except Exception as fatal_e:
+        send_telegram_alert(f"⚠️ <b>Engine Alert:</b> {fatal_e}")
+    finally:
+        await binance.close()
+        await mexc.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
