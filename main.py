@@ -3,15 +3,16 @@ import time
 import requests
 import asyncio
 
-# --- Configuration & Environment Variables ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs")
-TELEGRAM_CHAT_ID = os.getenv("8013586305", "YOUR_CHAT_ID_HERE")
-MEXC_API_KEY = os.getenv("MEXC_API_KEY", "mx0vglAfCE8tKXscOi")
+# --- Environment Variables (Loaded Securely from Railway Dashboard) ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+MEXC_API_KEY = os.getenv("MEXC_API_KEY", "")
+MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "")
 
 SYMBOL = "BTCUSDT"
 
-# --- Virtual Account & Risk Parameters ---
-virtual_equity = 100.0   # Starting Capital ($100)
+# --- Virtual Account & Strategy Parameters ---
+virtual_equity = 100.0   # Starting Virtual Balance ($100)
 margin_per_trade = 0.10   # 10% Margin per side (Total 20% in play)
 tp_roi = 1.00             # Target ROI: +100%
 sl_roi = 0.50             # Stop Loss: -50%
@@ -19,8 +20,9 @@ sl_roi = 0.50             # Stop Loss: -50%
 active_positions = None 
 
 def send_telegram_msg(message):
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("Telegram Token Missing!")
+    """Telegram Notification Dispatcher"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[Log] Telegram Token or Chat ID missing in Railway Variables!")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -29,22 +31,34 @@ def send_telegram_msg(message):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=5)
+        if res.status_code != 200:
+            print(f"[Telegram API Error] Status Code: {res.status_code}, Response: {res.text}")
     except Exception as e:
-        print(f"Telegram Notification Error: {e}")
+        print(f"[Telegram Exception] {e}")
 
 def fetch_mexc_btc_price():
-    """MEXC REST API se real-time price pull karta hai"""
+    """Fetch authenticated live market price from MEXC API"""
     url = f"https://api.mexc.com/api/v3/ticker/price?symbol={SYMBOL}"
-    headers = {}
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    # Passing API Key in Headers to prevent public IP rate limit crashes
     if MEXC_API_KEY:
         headers["X-MEXC-APIKEY"] = MEXC_API_KEY
+
     try:
         res = requests.get(url, headers=headers, timeout=5)
-        data = res.json()
-        return float(data['price'])
+        if res.status_code == 200:
+            data = res.json()
+            return float(data['price'])
+        else:
+            print(f"[MEXC API Error] Code: {res.status_code}, Message: {res.text}")
+            return None
     except Exception as e:
-        print(f"MEXC Price Fetch Error: {e}")
+        print(f"[MEXC Connection Exception] {e}")
         return None
 
 def open_simultaneous_trades(current_price):
@@ -52,7 +66,7 @@ def open_simultaneous_trades(current_price):
 
     margin_per_side = virtual_equity * margin_per_trade
 
-    # Price Calculation based on ROI %
+    # Target Price Calculations (+100% ROI TP / -50% ROI SL)
     long_tp = current_price * (1 + (tp_roi * margin_per_trade))
     long_sl = current_price * (1 - (sl_roi * margin_per_trade))
 
@@ -78,11 +92,11 @@ def open_simultaneous_trades(current_price):
         }
     }
 
-    # Complete Step-by-Step Execution Notification
+    # Complete Execution Alert
     send_telegram_msg(
-        f"⚡ *[PROCESS: NEW TRADES EXECUTED]*\n\n"
+        f"⚡ *[PROCESS: NEW DUAL TRADES EXECUTED]*\n\n"
         f"📍 *Execution Market Price:* `${current_price:.2f}`\n"
-        f"💰 *Current Equity Balance:* `${virtual_equity:.2f}`\n"
+        f"💰 *Current Total Equity:* `${virtual_equity:.2f}`\n"
         f"💵 *Margin Used (10% Per Side):* `${margin_per_side:.2f}` (Total: `${margin_per_side*2:.2f}`)\n\n"
         f"🟢 *LONG TRADE SETUP:* \n"
         f"• Entry: `${current_price:.2f}`\n"
@@ -92,7 +106,7 @@ def open_simultaneous_trades(current_price):
         f"• Entry: `${current_price:.2f}`\n"
         f"• Target TP (+100% ROI): `${short_tp:.2f}`\n"
         f"• Stop Loss (-50% ROI): `${short_sl:.2f}`\n\n"
-        f"👀 *Status:* Live tracking active. Waiting for TP/SL levels..."
+        f"👀 *Status:* Authenticated MEXC price tracking active..."
     )
 
 def monitor_positions(current_price):
@@ -150,7 +164,7 @@ def monitor_positions(current_price):
                 f"• Loss Incurred: `-${abs(short_pos['pnl']):.2f}` (-50% ROI)"
             )
 
-    # 3. Session Wrap Up (Jab dono Long & Short ke results final ho jayein)
+    # 3. Session Wrap-Up (When BOTH Long & Short Trades Close)
     if long_pos["status"] != "OPEN" and short_pos["status"] != "OPEN":
         net_pnl = long_pos["pnl"] + short_pos["pnl"]
         virtual_equity += net_pnl
@@ -166,18 +180,20 @@ def monitor_positions(current_price):
             f"🔄 *Next Step:* Triggering new dual-hedge trades..."
         )
 
-        active_positions = None  # Free for next execution
+        active_positions = None  # Reset for next trade cycle
 
 async def main_loop():
+    auth_status = "Authenticated API" if MEXC_API_KEY else "Public API"
+    
     # BOT STARTUP NOTIFICATION
     send_telegram_msg(
-        f"🤖 *[PROCESS: BOT INITIALIZED]*\n\n"
-        f"• Status: *Online & Connected to MEXC Realtime Feed*\n"
-        f"• Pair: *{SYMBOL}*\n"
-        f"• Virtual Capital: `$100.00`\n"
-        f"• Strategy: *Dual-Hedge Long & Short*\n"
-        f"• Target Setup: *+100% TP / -50% SL*\n\n"
-        f"🚀 *Scanning live market prices now...*"
+        f"🤖 *[PROCESS: BOT INITIALIZED & ONLINE]*\n\n"
+        f"• Exchange Feed: *MEXC Realtime ({auth_status})*\n"
+        f"• Target Pair: *{SYMBOL}*\n"
+        f"• Initial Virtual Capital: `$100.00`\n"
+        f"• Strategy Mode: *Simultaneous Buy & Sell*\n"
+        f"• Risk Rules: *10% Margin | +100% TP / -50% SL*\n\n"
+        f"🚀 *Connecting & scanning live market prices now...*"
     )
 
     while True:
@@ -190,10 +206,10 @@ async def main_loop():
                 else:
                     monitor_positions(current_price)
 
-            await asyncio.sleep(2)  # 2-second interval scanning
+            await asyncio.sleep(2)  # Check price every 2 seconds
 
         except Exception as e:
-            print(f"Main Loop Exception: {e}")
+            print(f"[Main Loop Exception] {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
