@@ -1,19 +1,23 @@
 import os
-import asyncio
-import json
 import time
 import requests
-import pandas as pd
-import numpy as np
+import asyncio
 
-# Railway Environment Variables
+# --- Configuration & Environment Variables ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8966817934:AAEQCfnoh90Ek-13kOoPJG17oRCfzzCogQs")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8013586305")
+TELEGRAM_CHAT_ID = os.getenv("8013586305", "YOUR_CHAT_ID_HERE")
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "mx0vglAfCE8tKXscOi")
-MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "5591ea266c5141bcbfe5f37782c84ac2")
 
 SYMBOL = "BTCUSDT"
-TIMEFRAME = "15m"
+
+# --- Virtual Account & Strategy Parameters ---
+virtual_equity = 100.0  # Initial Virtual Balance
+margin_per_trade = 0.10  # 10% Margin per side (Total 20% in play)
+tp_roi = 1.00            # +100% ROI Target
+sl_roi = 0.50            # -50% SL Cutoff
+
+# Holds both Active Long & Short positions
+active_positions = None 
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
@@ -28,128 +32,138 @@ def send_telegram_msg(message):
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Telegram Alert Error: {e}")
+        print(f"Telegram Notification Error: {e}")
 
-def fetch_mexc_klines(limit=100):
-    """MEXC API se BTC/USDT 15m K-line data fetch karta hai"""
-    url = f"https://api.mexc.com/api/v3/klines?symbol={SYMBOL}&interval={TIMEFRAME}&limit={limit}"
-    
+def fetch_mexc_btc_price():
+    """MEXC REST API se real-time BTC price fetch karta hai"""
+    url = f"https://api.mexc.com/api/v3/ticker/price?symbol={SYMBOL}"
     headers = {}
     if MEXC_API_KEY:
         headers["X-MEXC-APIKEY"] = MEXC_API_KEY
-
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        data = response.json()
-        
-        df = pd.DataFrame(data, columns=[
-            'open_time', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume'
-        ])
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
-        return df
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        return float(data['price'])
     except Exception as e:
-        print(f"Error fetching MEXC data: {e}")
+        print(f"MEXC Fetch Error: {e}")
         return None
 
-def analyze_candle(df):
-    pivots = 10
-    recent_df = df.iloc[-pivots*2:-1]
-    resistance = recent_df['high'].max()
-    support = recent_df['low'].min()
+def open_simultaneous_trades(current_price):
+    global active_positions, virtual_equity
 
-    next_resistance = resistance + (resistance - support)
-    next_support = support - (resistance - support)
+    margin_per_side = virtual_equity * margin_per_trade
 
-    last_candle = df.iloc[-2] # Recently closed candle
-    prev_candles = df.iloc[:-1]
+    # Long Position Parameters (+100% TP / -50% SL)
+    long_tp = current_price * (1 + (tp_roi * margin_per_trade))
+    long_sl = current_price * (1 - (sl_roi * margin_per_trade))
 
-    close_price = last_candle['close']
-    vol = last_candle['volume']
+    # Short Position Parameters (+100% TP / -50% SL)
+    short_tp = current_price * (1 - (tp_roi * margin_per_trade))
+    short_sl = current_price * (1 + (sl_roi * margin_per_trade))
 
-    is_breakout_up = close_price > resistance
-    is_breakout_down = close_price < support
+    active_positions = {
+        "long": {
+            "entry": current_price,
+            "margin": margin_per_side,
+            "tp": long_tp,
+            "sl": long_sl,
+            "status": "OPEN",  # OPEN, TP_HIT, SL_HIT
+            "pnl": 0.0
+        },
+        "short": {
+            "entry": current_price,
+            "margin": margin_per_side,
+            "tp": short_tp,
+            "sl": short_sl,
+            "status": "OPEN",  # OPEN, TP_HIT, SL_HIT
+            "pnl": 0.0
+        }
+    }
 
-    if not is_breakout_up and not is_breakout_down:
+    send_telegram_msg(
+        f"⚔️ *Simultaneous Long & Short Positions Opened!*\n\n"
+        f"📍 *Entry Price:* `${current_price:.2f}`\n"
+        f"💰 *Margin Per Side (10%):* `${margin_per_side:.2f}` (Total: `${margin_per_side*2:.2f}`)\n\n"
+        f"📈 *LONG:* TP `${long_tp:.2f}` | SL `${long_sl:.2f}`\n"
+        f"📉 *SHORT:* TP `${short_tp:.2f}` | SL `${short_sl:.2f}`\n\n"
+        f"💼 *Total Account Equity:* `${virtual_equity:.2f}`"
+    )
+
+def monitor_positions(current_price):
+    global active_positions, virtual_equity
+
+    if not active_positions:
         return
 
-    # 1. Analyzing Alert
-    send_telegram_msg("🔍 *[MEXC Scanning]* Breakout Detected on BTC/USDT 15m.\nChecking SMC Filters...")
+    long_pos = active_positions["long"]
+    short_pos = active_positions["short"]
 
-    reasons = []
+    # --- 1. Check LONG Trade ---
+    if long_pos["status"] == "OPEN":
+        if current_price >= long_pos["tp"]:
+            long_pos["status"] = "TP_HIT"
+            long_pos["pnl"] = long_pos["margin"] * tp_roi
+            send_telegram_msg(f"🎯 *LONG Position TP Hit!* Profit: `+${long_pos['pnl']:.2f}`")
+        elif current_price <= long_pos["sl"]:
+            long_pos["status"] = "SL_HIT"
+            long_pos["pnl"] = -(long_pos["margin"] * sl_roi)
+            send_telegram_msg(f"🛑 *LONG Position SL Hit!* Loss: `-${abs(long_pos['pnl']):.2f}`")
 
-    # Filter 1: Volume Spike Check
-    avg_vol = prev_candles['volume'].tail(20).mean()
-    if vol <= avg_vol * 1.2:
-        reasons.append(f"Low Volume Spike (Vol: {vol:.1f} vs Avg: {avg_vol:.1f})")
+    # --- 2. Check SHORT Trade ---
+    if short_pos["status"] == "OPEN":
+        if current_price <= short_pos["tp"]:
+            short_pos["status"] = "TP_HIT"
+            short_pos["pnl"] = short_pos["margin"] * tp_roi
+            send_telegram_msg(f"🎯 *SHORT Position TP Hit!* Profit: `+${short_pos['pnl']:.2f}`")
+        elif current_price >= short_pos["sl"]:
+            short_pos["status"] = "SL_HIT"
+            short_pos["pnl"] = -(short_pos["margin"] * sl_roi)
+            send_telegram_msg(f"🛑 *SHORT Position SL Hit!* Loss: `-${abs(short_pos['pnl']):.2f}`")
 
-    # Filter 2: FVG Gap Check
-    if is_breakout_up:
-        c1_high = prev_candles.iloc[-3]['high']
-        c3_low = last_candle['low']
-        if c3_low > c1_high:
-            fvg_gap = (c3_low - c1_high) / close_price
-            if fvg_gap > 0.003: # 0.3% Threshold
-                reasons.append("Unfilled FVG Gap Below Entry")
-    elif is_breakout_down:
-        c1_low = prev_candles.iloc[-3]['low']
-        c3_high = last_candle['high']
-        if c3_high < c1_low:
-            fvg_gap = (c1_low - c3_high) / close_price
-            if fvg_gap > 0.003:
-                reasons.append("Unfilled FVG Gap Above Entry")
+    # --- 3. Close Session When BOTH Trades Hit TP or SL ---
+    if long_pos["status"] != "OPEN" and short_pos["status"] != "OPEN":
+        net_session_pnl = long_pos["pnl"] + short_pos["pnl"]
+        virtual_equity += net_session_pnl
 
-    # Send Notification Results
-    if is_breakout_up:
-        send_telegram_msg(f"⚡ *MEXC Breakout:* Resistance Broken @ `{resistance:.2f}`")
-        if not reasons:
-            send_telegram_msg(
-                f"✅ *Verification Passed! All SMC Filters Clear.*\n\n"
-                f"📈 *Signal: BUY / LONG*\n"
-                f"📍 *Entry:* `{close_price:.2f}`\n"
-                f"🛑 *SL:* `{support:.2f}`\n"
-                f"🎯 *TP:* `{next_resistance:.2f}`"
-            )
-        else:
-            send_telegram_msg(f"❌ *Verification Failed! Trade Skipped.*\n*Reason:* {', '.join(reasons)}")
+        result_emoji = "🎉" if net_session_pnl > 0 else "❌"
+        send_telegram_msg(
+            f"🔄 *Both Positions Closed! Session Finished* {result_emoji}\n\n"
+            f"📈 LONG Result: `{long_pos['status']}` (`${long_pos['pnl']:.2f}`)\n"
+            f"📉 SHORT Result: `{short_pos['status']}` (`${short_pos['pnl']:.2f}`)\n"
+            f"📊 *Net Session PnL:* `${net_session_pnl:+.2f}`\n"
+            f"💼 *Updated Virtual Equity:* `${virtual_equity:.2f}`\n\n"
+            f"⏳ *Opening Next Dual Trade Set Immediately...*"
+        )
 
-    elif is_breakout_down:
-        send_telegram_msg(f"⚡ *MEXC Breakout:* Support Broken @ `{support:.2f}`")
-        if not reasons:
-            send_telegram_msg(
-                f"✅ *Verification Passed! All SMC Filters Clear.*\n\n"
-                f"📉 *Signal: SELL / SHORT*\n"
-                f"📍 *Entry:* `{close_price:.2f}`\n"
-                f"🛑 *SL:* `{resistance:.2f}`\n"
-                f"🎯 *TP:* `{next_support:.2f}`"
-            )
-        else:
-            send_telegram_msg(f"❌ *Verification Failed! Trade Skipped.*\n*Reason:* {', '.join(reasons)}")
+        # Clear position state so new pair can open on next tick
+        active_positions = None
 
 async def main_loop():
-    send_telegram_msg("🤖 *BTC/USDT MEXC SMC Breakout Scanner Started on Railway!*")
-    last_processed_time = None
+    send_telegram_msg(
+        f"🤖 *Dual-Hedge Grid Bot Live on Railway!*\n"
+        f"Initial Virtual Equity: `$100.00`\n"
+        f"Mode: *Simultaneous Buy & Sell*\n"
+        f"Scanning Real-Time Price..."
+    )
 
     while True:
         try:
-            df = fetch_mexc_klines(limit=50)
-            if df is not None and not df.empty:
-                current_candle_time = df.iloc[-1]['open_time']
-                
-                # Check if a new 15m candle has closed
-                if last_processed_time != current_candle_time:
-                    last_processed_time = current_candle_time
-                    analyze_candle(df)
+            current_price = fetch_mexc_btc_price()
 
-            # Polling every 15 seconds
-            await asyncio.sleep(15)
+            if current_price:
+                if active_positions is None:
+                    open_simultaneous_trades(current_price)
+                else:
+                    monitor_positions(current_price)
+
+            await asyncio.sleep(2)  # Fast 2-second price tracking
 
         except Exception as e:
-            print(f"Loop Error: {e}")
-            await asyncio.sleep(10)
+            print(f"Loop Exception: {e}")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main_loop())
+
+ 
+ 
