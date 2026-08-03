@@ -1,3 +1,4 @@
+
 import os
 import time
 import datetime
@@ -11,12 +12,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "")
 MEXC_SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "")
 
-SYMBOL = "BTCUSDT"
+# Changed Symbol to Gold (PAXGUSDT)
+SYMBOL = "PAXGUSDT"
 DB_FILE = "trades_history.db"
 
 # --- Virtual Account & Strategy Parameters ---
 virtual_equity = 100.0   # Starting Virtual Balance ($100)
-margin_per_trade = 0.10   # 10% Margin per side ($10)
+margin_per_trade = 0.40   # Updated to 40% Margin per side ($40)
 leverage = 100            # 100x Leverage
 tp_roi = 1.00             # Target ROI: +100%
 sl_roi = 0.50             # Stop Loss: -50%
@@ -140,8 +142,8 @@ def check_telegram_commands():
     except Exception as e:
         print(f"[Telegram Listener Error] {e}")
 
-def fetch_mexc_btc_price():
-    """Fetch live market price from MEXC API"""
+def fetch_mexc_gold_price():
+    """Fetch live market price for Gold (PAXGUSDT) from MEXC API"""
     url = f"https://api.mexc.com/api/v3/ticker/price?symbol={SYMBOL}"
     headers = {"Content-Type": "application/json"}
     if MEXC_API_KEY:
@@ -158,6 +160,7 @@ def fetch_mexc_btc_price():
 def open_simultaneous_trades(current_price):
     global active_positions, virtual_equity, last_status_time, trade_start_time
 
+    # 40% margin per side
     margin_per_side = virtual_equity * margin_per_trade
     position_size = margin_per_side * leverage
 
@@ -190,10 +193,10 @@ def open_simultaneous_trades(current_price):
     last_status_time = time.time()
 
     send_telegram_msg(
-        f"⚡ *[PROCESS: NEW 100X DUAL TRADES EXECUTED]*\n\n"
-        f"📍 *Execution Entry Price:* `${current_price:.2f}`\n"
+        f"⚡ *[PROCESS: NEW 100X GOLD DUAL TRADES EXECUTED]*\n\n"
+        f"📍 *Execution Entry Price (PAXG):* `${current_price:.2f}`\n"
         f"🚀 *Leverage:* `100x` | *Total Equity:* `${virtual_equity:.2f}`\n"
-        f"💵 *Margin Used:* `${margin_per_side:.2f}` per side\n\n"
+        f"💵 *Margin Used:* `${margin_per_side:.2f}` per side (40% Margin)\n\n"
         f"🟢 *LONG SETUP (BUY):*\n"
         f"• Entry: `${current_price:.2f}` | Initial PnL: `$0.00` (`0.00% ROI`)\n"
         f"• TP: `${long_tp:.2f}` (+100% ROI) | SL: `${long_sl:.2f}` (-50% ROI)\n\n"
@@ -228,8 +231,8 @@ def send_minute_update(current_price):
         short_str = f"🔴 *SHORT:* Closed (`{short_pos['status']}` | `${short_pos['pnl']:+.2f}`)"
 
     send_telegram_msg(
-        f"⏱️ *[1-MINUTE TRADES UPDATE]*\n\n"
-        f"📍 *BTC Price:* `${current_price:.2f}`\n"
+        f"⏱️ *[1-MINUTE GOLD TRADES UPDATE]*\n\n"
+        f"📍 *Gold Price (PAXG):* `${current_price:.2f}`\n"
         f"⏳ *Trade Duration:* `{elapsed_minutes} mins` running\n\n"
         f"{long_str}\n\n"
         f"{short_str}\n\n"
@@ -352,7 +355,7 @@ def monitor_positions(current_price):
             f"💵 *Net Session PnL:* `${net_pnl:+.2f}`\n"
             f"💼 *Updated Virtual Equity:* `${virtual_equity:.2f}`\n"
             f"🔢 *Today's Total Completed Sessions:* `{trades_today}`\n\n"
-            f"⚡ *[INSTANT RE-ENTRY]:* Opening next 100x dual trades..."
+            f"⚡ *[INSTANT RE-ENTRY]:* Opening next 100x Gold dual trades..."
         )
 
         active_positions = None
@@ -362,9 +365,10 @@ async def main_loop():
     auth_status = "Authenticated API" if MEXC_API_KEY else "Public API"
     
     send_telegram_msg(
-        f"🤖 *[PROCESS: BOT INITIALIZED & ONLINE]*\n\n"
+        f"🤖 *[PROCESS: GOLD TRADING BOT INITIALIZED & ONLINE]*\n\n"
         f"• Exchange Feed: *MEXC Realtime ({auth_status})*\n"
         f"• Pair: *{SYMBOL}* | Leverage: *100x*\n"
+        f"• Margin Allocation: *40% Per Side*\n"
         f"• Features: *Live Minute Updates, Elapsed Time, Hourly & 24h Cycles, Database History Logging*\n\n"
         f"📱 *Telegram Command Enabled:* Send `/stats` or `/stats YYYY-MM-DD` anytime to query history."
     )
@@ -377,7 +381,7 @@ async def main_loop():
             # Check Hourly/Daily timing logic
             process_hourly_and_daily_checks()
 
-            current_price = fetch_mexc_btc_price()
+            current_price = fetch_mexc_gold_price()
             if current_price:
                 if active_positions is None:
                     open_simultaneous_trades(current_price)
